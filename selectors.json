@@ -1,0 +1,22 @@
+{
+  "capturedAt": "2026-03-09",
+  "notes": "Baseline selectors from initial development session",
+  "dialog": {
+    "containerClass": "container-BZKENkhT",
+    "titleClass": "ellipsis-BZKENkhT"
+  },
+  "checkboxes": {
+    "wrapperClass": "wrapper-GZajBGIm",
+    "viewClass": "view-GZajBGIm",
+    "boxClass": "box-vgla_e5o",
+    "inputClass": "input-GZajBGIm",
+    "labelClass": "label-vyj6oJ..."
+  },
+  "textInputs": {
+    "inputClass": "input-RUSovanF",
+    "dataQaId": "ui-lib-Input-input",
+    "inputmode": "numeric",
+    "slotClass": "inner-slot-W53jtLjw"
+  },
+  "totalInputs": 81
+}
