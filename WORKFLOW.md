@@ -122,35 +122,50 @@ Save as `selectors.json` so the next update can diff against it.
 
 ## Architecture Notes
 
+### v2.0 — React Fiber Approach (March 2026)
+
+The script no longer relies on DOM labels to identify inputs. Instead, it reads
+**React fiber metadata** directly from each `<input>` element:
+
+```
+inputEl.__reactFiber$xxx → walk .return chain → memoizedProps.property
+  → { id: "in_0", name: "Fast ATR Length", group: "SUPERTREND", type: "integer", defval: 10 }
+```
+
+**Export keys** are internal property IDs (`in_0`, `in_1`, …) — stable across
+TradingView builds. Display names are stored in the `meta` section for reference.
+
+**Import** matches by the same `property.id`, so exported JSON files remain
+valid even after TradingView CSS class changes.
+
 ### Key Selectors (as of March 2026)
 
 ```
 Dialog:       [class*="container-"] with child [class*="ellipsis-"]
 Footer:       Parent of button with text "ok" or "cancel"
 Checkboxes:   input[type="checkbox"] with aria-checked attribute
-Text inputs:  input with data-qa-id="ui-lib-Input-input", inputmode="numeric"
-Labels:       [class*="label-"] siblings for checkboxes
-              [class*="title_"] ancestors for text inputs
-              Sibling text elements as fallback
+Text inputs:  input with inputmode="numeric" or type="number"
+Metadata:     React fiber memoizedProps.property (id, name, group, type, defval)
 ```
 
 ### Resilience Strategies
 
 The script uses these approaches to survive class name changes:
 
-1. **Substring class matching** — `[class*="container-"]` instead of exact class names
-2. **Structural detection** — "div with >3 inputs and a title" instead of specific classes
-3. **Multiple fallback strategies** — 3 ways to find dialog, 4 ways to find labels
+1. **React fiber metadata** — property IDs from internal state, not DOM classes
+2. **Substring class matching** — `[class*="container-"]` instead of exact class names
+3. **Structural detection** — "div with >3 inputs and a title" instead of specific classes
 4. **Behavior-based detection** — "button with text OK" instead of button class
 
 ### What Usually Changes
 
 | Element | Stability | Notes |
 |---------|-----------|-------|
+| React fiber `property.id` | HIGH | Internal IDs like `in_0` are stable |
 | `role="dialog"` | HIGH | Standard ARIA, rarely changes |
 | Button text "OK"/"Cancel" | HIGH | User-visible text |
-| `data-qa-id` attributes | MEDIUM | QA markers, less likely to change |
-| `[class*="container-"]` | MEDIUM | Pattern stable, hash suffix changes |
 | `aria-checked` on checkboxes | HIGH | Accessibility standard |
 | `inputmode="numeric"` | HIGH | HTML standard attribute |
+| `[class*="container-"]` | MEDIUM | Pattern stable, hash suffix changes |
+| React fiber key prefix | MEDIUM | `__reactFiber$` could change if React updates |
 | Exact class names (e.g., `input-RUSovanF`) | LOW | Changes every build |

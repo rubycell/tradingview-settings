@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TradingView Settings IO
 // @namespace    https://github.com/tradingview-settings
-// @version      1.0.0
+// @version      2.0.0
 // @description  Adds Import/Export buttons to TradingView strategy settings dialog
 // @match        https://www.tradingview.com/chart/*
 // @match        https://www.tradingview.com/*/chart/*
@@ -28,15 +28,6 @@
 
     // Footer: we find buttons by their visible text, not class
     footerButtonTexts: ["ok", "cancel"],
-
-    // Label detection (tried in order)
-    checkboxLabel: '[class*="label-"]',
-    inputTitle: '[class*="title_"]',
-    inputLabel: '[class*="label_"]:not([class*="slider"])',
-    inputTitleText: '[class*="titleText"]',
-    maxLabelLength: 200,
-    maxLabelDepth: 10,
-    maxInputsPerRow: 3,
 
     // Input detection
     checkboxType: "checkbox",
@@ -90,62 +81,39 @@
   }
 
   // =========================================================================
-  //  Label <-> Input Mapping
+  //  React Fiber — extract internal property metadata from input elements
+  //
+  //  TradingView stores each input's metadata (id, name, group, type, defval)
+  //  in the React fiber tree at memoizedProps.property.
+  //  We walk up from each <input> DOM element to find this property object.
   // =========================================================================
 
-  function findLabelForInput(inputEl) {
-    // For checkboxes: label is a sibling
-    const parent = inputEl.parentElement;
-    if (parent) {
-      const labelSibling =
-        parent.parentElement?.querySelector(SEL.checkboxLabel);
-      if (labelSibling) {
-        const text = labelSibling.textContent.trim();
-        if (text) return text;
-      }
-    }
-
-    // Walk up DOM looking for title/label element
-    let ancestor = inputEl.parentElement;
-    for (let depth = 0; depth < SEL.maxLabelDepth && ancestor; depth++) {
-      const titleEl = ancestor.querySelector(
-        `${SEL.inputTitle},${SEL.inputLabel},${SEL.inputTitleText}`
-      );
-      if (titleEl) {
-        const text = titleEl.textContent.trim();
-        if (text && text.length > 0 && text.length < SEL.maxLabelLength) {
-          const inputsInAncestor = ancestor.querySelectorAll("input");
-          if (inputsInAncestor.length <= SEL.maxInputsPerRow) return text;
-        }
-      }
-
-      for (const child of ancestor.children) {
-        if (child === inputEl || child.contains(inputEl)) continue;
-        if (child.querySelector("input")) continue;
-        const text = child.textContent.trim();
-        if (
-          text &&
-          text.length > 0 &&
-          text.length < 150 &&
-          !text.includes("\n")
-        ) {
-          if (child.querySelectorAll("input").length === 0) return text;
-        }
-      }
-
-      ancestor = ancestor.parentElement;
-    }
-
-    return (
-      inputEl.getAttribute("aria-label") ||
-      inputEl.getAttribute("placeholder") ||
-      inputEl.getAttribute("name") ||
-      null
+  function getReactFiberKey(element) {
+    return Object.keys(element).find(
+      (k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$")
     );
   }
 
+  function getInputProperty(inputEl) {
+    const fiberKey = getReactFiberKey(inputEl);
+    if (!fiberKey) return null;
+
+    let fiber = inputEl[fiberKey];
+    for (let i = 0; i < 40 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p) {
+        const propObj = p.property || p.definition || p.input;
+        if (propObj && typeof propObj === "object" && propObj.id) {
+          return propObj;
+        }
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
   // =========================================================================
-  //  EXPORT
+  //  EXPORT — uses property.id as key
   // =========================================================================
 
   function extractValue(inputEl) {
@@ -168,29 +136,31 @@
   }
 
   function exportInputs(dialog) {
-    const results = {};
+    const inputs = {};
+    const meta = {};
     const allInputs = dialog.querySelectorAll("input");
 
     for (const inputEl of allInputs) {
-      const label = findLabelForInput(inputEl);
-      if (!label) continue;
+      const property = getInputProperty(inputEl);
+      if (!property) continue;
 
+      const key = property.id;
       const value = extractValue(inputEl);
 
-      let finalLabel = label;
-      if (results.hasOwnProperty(finalLabel)) {
-        let idx = 2;
-        while (results.hasOwnProperty(`${label} (${idx})`)) idx++;
-        finalLabel = `${label} (${idx})`;
-      }
-      results[finalLabel] = value;
+      inputs[key] = value;
+      meta[key] = {
+        name: property.name,
+        group: property.group || null,
+        type: property.type,
+        defval: property.defval,
+      };
     }
 
-    return results;
+    return { inputs, meta };
   }
 
   // =========================================================================
-  //  IMPORT
+  //  IMPORT — matches by property.id
   // =========================================================================
 
   function setNativeValue(inputEl, value) {
@@ -222,38 +192,31 @@
     inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
-  function buildLabelToInputMap(dialog) {
-    const labelMap = {};
+  function buildIdToInputMap(dialog) {
+    const idMap = {};
     const allInputs = dialog.querySelectorAll("input");
 
     for (const inputEl of allInputs) {
-      const label = findLabelForInput(inputEl);
-      if (!label) continue;
-
-      let finalLabel = label;
-      if (labelMap.hasOwnProperty(finalLabel)) {
-        let idx = 2;
-        while (labelMap.hasOwnProperty(`${label} (${idx})`)) idx++;
-        finalLabel = `${label} (${idx})`;
-      }
-      labelMap[finalLabel] = inputEl;
+      const property = getInputProperty(inputEl);
+      if (!property) continue;
+      idMap[property.id] = inputEl;
     }
 
-    return labelMap;
+    return idMap;
   }
 
   function importInputs(dialog, data) {
     const inputValues = data.inputs || data;
-    const labelMap = buildLabelToInputMap(dialog);
+    const idMap = buildIdToInputMap(dialog);
 
     let matched = 0;
     let skipped = 0;
     const notFound = [];
 
-    for (const [label, value] of Object.entries(inputValues)) {
-      const inputEl = labelMap[label];
+    for (const [id, value] of Object.entries(inputValues)) {
+      const inputEl = idMap[id];
       if (!inputEl) {
-        notFound.push(label);
+        notFound.push(id);
         skipped++;
         continue;
       }
@@ -372,7 +335,7 @@
       e.preventDefault();
       e.stopPropagation();
 
-      const inputs = exportInputs(dialog);
+      const { inputs, meta } = exportInputs(dialog);
       const count = Object.keys(inputs).length;
 
       if (count === 0) {
@@ -395,6 +358,7 @@
           exportedAt: new Date().toISOString(),
           inputCount: count,
           inputs: inputs,
+          meta: meta,
         },
         `${safeName}_${timestamp}.json`
       );
@@ -402,6 +366,14 @@
       console.log(
         `%c[TV-IO] Exported ${count} inputs`,
         "color: #2196F3; font-weight: bold"
+      );
+      console.table(
+        Object.entries(inputs).map(([id, value]) => ({
+          id,
+          name: meta[id]?.name,
+          group: meta[id]?.group,
+          value,
+        }))
       );
     });
 

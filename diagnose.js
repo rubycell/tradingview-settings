@@ -232,7 +232,60 @@
   ];
 
   // =========================================================================
-  //  Step 5: Detect working selectors
+  //  Step 5: React Fiber — check if property metadata is accessible
+  // =========================================================================
+
+  function getReactFiberKey(element) {
+    return Object.keys(element).find(
+      (k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$")
+    );
+  }
+
+  function getInputProperty(inputEl) {
+    const fiberKey = getReactFiberKey(inputEl);
+    if (!fiberKey) return null;
+    let fiber = inputEl[fiberKey];
+    for (let i = 0; i < 40 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p) {
+        const propObj = p.property || p.definition || p.input;
+        if (propObj && typeof propObj === "object" && propObj.id) return propObj;
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  const fiberResults = [];
+  let fiberSuccessCount = 0;
+  let fiberFailCount = 0;
+  for (const inputEl of allInputs) {
+    const prop = getInputProperty(inputEl);
+    if (prop) {
+      fiberSuccessCount++;
+      if (fiberResults.length < 5) {
+        fiberResults.push({
+          id: prop.id,
+          name: prop.name,
+          group: prop.group || null,
+          type: prop.type,
+          defval: prop.defval,
+        });
+      }
+    } else {
+      fiberFailCount++;
+    }
+  }
+
+  report.reactFiber = {
+    hasFiberKeys: !!getReactFiberKey(allInputs[0]),
+    inputsWithProperty: fiberSuccessCount,
+    inputsWithoutProperty: fiberFailCount,
+    sampleProperties: fiberResults,
+  };
+
+  // =========================================================================
+  //  Step 6: Detect working selectors
   // =========================================================================
 
   const selectorTests = {
@@ -262,6 +315,7 @@
       dialog.querySelectorAll('[class*="select_"]').length,
     'tabs: [class*="tab_"]':
       dialog.querySelectorAll('[class*="tab_"]').length,
+    'reactFiber: property metadata accessible': fiberSuccessCount,
   };
 
   report.selectors = selectorTests;
