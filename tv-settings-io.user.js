@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TradingView Settings IO
 // @namespace    https://github.com/tradingview-settings
-// @version      2.0.0
+// @version      2.2.0
 // @description  Adds Import/Export buttons to TradingView strategy settings dialog
 // @match        https://www.tradingview.com/chart/*
 // @match        https://www.tradingview.com/*/chart/*
@@ -113,6 +113,107 @@
   }
 
   // =========================================================================
+  //  Dropdown (custom <button> selects) — extract id, value, onChange
+  //
+  //  TradingView renders input.string(..., options=[...]) as custom button
+  //  dropdowns, NOT as <input> or <select> elements. The React fiber stores:
+  //    - memoizedProps.id  (e.g. "in_2")     at shallow depth
+  //    - memoizedProps.value / .onChange       at deeper depth
+  // =========================================================================
+
+  function getDropdownInfo(buttonEl) {
+    const fiberKey = getReactFiberKey(buttonEl);
+    if (!fiberKey) return null;
+
+    let id = null;
+    let value = null;
+
+    let fiber = buttonEl[fiberKey];
+    for (let i = 0; i < 15 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p) {
+        if (!id && typeof p.id === "string" && /^in_\d+$/.test(p.id)) {
+          id = p.id;
+        }
+        if (value === null && p.value !== undefined && typeof p.onChange === "function") {
+          value = p.value;
+        }
+      }
+      fiber = fiber.return;
+    }
+
+    return id && value !== null ? { id, value } : null;
+  }
+
+  function setDropdownValue(buttonEl, newValue) {
+    const fiberKey = getReactFiberKey(buttonEl);
+    if (!fiberKey) return false;
+
+    let fiber = buttonEl[fiberKey];
+    for (let i = 0; i < 15 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p && typeof p.onChange === "function" && p.value !== undefined) {
+        p.onChange(newValue);
+        return true;
+      }
+      fiber = fiber.return;
+    }
+    return false;
+  }
+
+  // =========================================================================
+  //  DateTime (custom date+time picker) — metadata in memoizedProps.input
+  //
+  //  TradingView renders input.time() as a containerDateTimeInput <div>,
+  //  NOT as a native <input>. The React fiber stores:
+  //    - memoizedProps.input  (with .id, .name, .type, .group)
+  //    - memoizedProps.value  (numeric timestamp)
+  //    - memoizedProps.onChange
+  // =========================================================================
+
+  function getDateTimeInfo(containerEl) {
+    const fiberKey = getReactFiberKey(containerEl);
+    if (!fiberKey) return null;
+
+    let inputMeta = null;
+    let value = null;
+
+    let fiber = containerEl[fiberKey];
+    for (let i = 0; i < 10 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p) {
+        if (!inputMeta && p.input && p.input.id && p.input.type === "time") {
+          inputMeta = p.input;
+        }
+        if (value === null && p.value !== undefined && typeof p.onChange === "function") {
+          value = p.value;
+        }
+      }
+      fiber = fiber.return;
+    }
+
+    return inputMeta && value !== null
+      ? { id: inputMeta.id, value, name: inputMeta.name, group: inputMeta.group, defval: inputMeta.defval }
+      : null;
+  }
+
+  function setDateTimeValue(containerEl, newValue) {
+    const fiberKey = getReactFiberKey(containerEl);
+    if (!fiberKey) return false;
+
+    let fiber = containerEl[fiberKey];
+    for (let i = 0; i < 10 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p && typeof p.onChange === "function" && p.value !== undefined) {
+        p.onChange(newValue);
+        return true;
+      }
+      fiber = fiber.return;
+    }
+    return false;
+  }
+
+  // =========================================================================
   //  EXPORT — uses property.id as key
   // =========================================================================
 
@@ -138,21 +239,50 @@
   function exportInputs(dialog) {
     const inputs = {};
     const meta = {};
-    const allInputs = dialog.querySelectorAll("input");
 
-    for (const inputEl of allInputs) {
+    // Pass 1: <input> elements (text fields, checkboxes)
+    for (const inputEl of dialog.querySelectorAll("input")) {
       const property = getInputProperty(inputEl);
       if (!property) continue;
 
       const key = property.id;
-      const value = extractValue(inputEl);
-
-      inputs[key] = value;
+      inputs[key] = extractValue(inputEl);
       meta[key] = {
         name: property.name,
         group: property.group || null,
         type: property.type,
         defval: property.defval,
+      };
+    }
+
+    // Pass 2: dropdown <button> elements (input.string with options)
+    const seenIds = new Set(Object.keys(inputs));
+    for (const btn of dialog.querySelectorAll("button")) {
+      const dropdown = getDropdownInfo(btn);
+      if (!dropdown || seenIds.has(dropdown.id)) continue;
+      seenIds.add(dropdown.id);
+
+      inputs[dropdown.id] = dropdown.value;
+      meta[dropdown.id] = {
+        name: null,
+        group: null,
+        type: "string_options",
+        defval: null,
+      };
+    }
+
+    // Pass 3: datetime picker elements (input.time)
+    for (const el of dialog.querySelectorAll('[class*="containerDateTimeInput"]')) {
+      const dt = getDateTimeInfo(el);
+      if (!dt || seenIds.has(dt.id)) continue;
+      seenIds.add(dt.id);
+
+      inputs[dt.id] = dt.value;
+      meta[dt.id] = {
+        name: dt.name,
+        group: dt.group || null,
+        type: "time",
+        defval: dt.defval,
       };
     }
 
@@ -192,14 +322,28 @@
     inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
-  function buildIdToInputMap(dialog) {
+  function buildIdToElementMap(dialog) {
     const idMap = {};
-    const allInputs = dialog.querySelectorAll("input");
 
-    for (const inputEl of allInputs) {
+    // Pass 1: <input> elements
+    for (const inputEl of dialog.querySelectorAll("input")) {
       const property = getInputProperty(inputEl);
       if (!property) continue;
-      idMap[property.id] = inputEl;
+      idMap[property.id] = { el: inputEl, kind: "input" };
+    }
+
+    // Pass 2: dropdown <button> elements
+    for (const btn of dialog.querySelectorAll("button")) {
+      const dropdown = getDropdownInfo(btn);
+      if (!dropdown || idMap[dropdown.id]) continue;
+      idMap[dropdown.id] = { el: btn, kind: "dropdown" };
+    }
+
+    // Pass 3: datetime picker elements
+    for (const el of dialog.querySelectorAll('[class*="containerDateTimeInput"]')) {
+      const dt = getDateTimeInfo(el);
+      if (!dt || idMap[dt.id]) continue;
+      idMap[dt.id] = { el, kind: "datetime" };
     }
 
     return idMap;
@@ -207,20 +351,27 @@
 
   function importInputs(dialog, data) {
     const inputValues = data.inputs || data;
-    const idMap = buildIdToInputMap(dialog);
+    const idMap = buildIdToElementMap(dialog);
 
     let matched = 0;
     let skipped = 0;
     const notFound = [];
 
     for (const [id, value] of Object.entries(inputValues)) {
-      const inputEl = idMap[id];
-      if (!inputEl) {
+      const entry = idMap[id];
+      if (!entry) {
         notFound.push(id);
         skipped++;
         continue;
       }
-      setNativeValue(inputEl, value);
+
+      if (entry.kind === "dropdown") {
+        setDropdownValue(entry.el, value);
+      } else if (entry.kind === "datetime") {
+        setDateTimeValue(entry.el, value);
+      } else {
+        setNativeValue(entry.el, value);
+      }
       matched++;
     }
 

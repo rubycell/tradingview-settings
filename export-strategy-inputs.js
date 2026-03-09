@@ -78,6 +78,66 @@
     return null;
   }
 
+  // --- Dropdown (custom <button> selects) ---
+
+  function getDropdownInfo(buttonEl) {
+    const fk = getReactFiberKey(buttonEl);
+    if (!fk) return null;
+    let id = null, value = null;
+    let fiber = buttonEl[fk];
+    for (let i = 0; i < 15 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p) {
+        if (!id && typeof p.id === "string" && /^in_\d+$/.test(p.id)) id = p.id;
+        if (value === null && p.value !== undefined && typeof p.onChange === "function") value = p.value;
+      }
+      fiber = fiber.return;
+    }
+    return id && value !== null ? { id, value } : null;
+  }
+
+  function setDropdownValue(buttonEl, newValue) {
+    const fk = getReactFiberKey(buttonEl);
+    if (!fk) return false;
+    let fiber = buttonEl[fk];
+    for (let i = 0; i < 15 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p && typeof p.onChange === "function" && p.value !== undefined) { p.onChange(newValue); return true; }
+      fiber = fiber.return;
+    }
+    return false;
+  }
+
+  // --- DateTime (custom date+time picker) ---
+
+  function getDateTimeInfo(containerEl) {
+    const fk = getReactFiberKey(containerEl);
+    if (!fk) return null;
+    let inputMeta = null, value = null;
+    let fiber = containerEl[fk];
+    for (let i = 0; i < 10 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p) {
+        if (!inputMeta && p.input?.id && p.input.type === "time") inputMeta = p.input;
+        if (value === null && p.value !== undefined && typeof p.onChange === "function") value = p.value;
+      }
+      fiber = fiber.return;
+    }
+    return inputMeta && value !== null ? { id: inputMeta.id, value, name: inputMeta.name, group: inputMeta.group, defval: inputMeta.defval } : null;
+  }
+
+  function setDateTimeValue(containerEl, newValue) {
+    const fk = getReactFiberKey(containerEl);
+    if (!fk) return false;
+    let fiber = containerEl[fk];
+    for (let i = 0; i < 10 && fiber; i++) {
+      const p = fiber.memoizedProps;
+      if (p && typeof p.onChange === "function" && p.value !== undefined) { p.onChange(newValue); return true; }
+      fiber = fiber.return;
+    }
+    return false;
+  }
+
   // --- Export ---
 
   function extractValue(inputEl) {
@@ -100,6 +160,21 @@
       if (!prop) continue;
       inputs[prop.id] = extractValue(el);
       meta[prop.id] = { name: prop.name, group: prop.group || null, type: prop.type, defval: prop.defval };
+    }
+    const seenIds = new Set(Object.keys(inputs));
+    for (const btn of dialog.querySelectorAll("button")) {
+      const dd = getDropdownInfo(btn);
+      if (!dd || seenIds.has(dd.id)) continue;
+      seenIds.add(dd.id);
+      inputs[dd.id] = dd.value;
+      meta[dd.id] = { name: null, group: null, type: "string_options", defval: null };
+    }
+    for (const el of dialog.querySelectorAll('[class*="containerDateTimeInput"]')) {
+      const dt = getDateTimeInfo(el);
+      if (!dt || seenIds.has(dt.id)) continue;
+      seenIds.add(dt.id);
+      inputs[dt.id] = dt.value;
+      meta[dt.id] = { name: dt.name, group: dt.group || null, type: "time", defval: dt.defval };
     }
     return { inputs, meta };
   }
@@ -126,14 +201,24 @@
     const idMap = {};
     for (const el of dialog.querySelectorAll("input")) {
       const prop = getInputProperty(el);
-      if (prop) idMap[prop.id] = el;
+      if (prop) idMap[prop.id] = { el, kind: "input" };
+    }
+    for (const btn of dialog.querySelectorAll("button")) {
+      const dd = getDropdownInfo(btn);
+      if (dd && !idMap[dd.id]) idMap[dd.id] = { el: btn, kind: "dropdown" };
+    }
+    for (const el of dialog.querySelectorAll('[class*="containerDateTimeInput"]')) {
+      const dt = getDateTimeInfo(el);
+      if (dt && !idMap[dt.id]) idMap[dt.id] = { el, kind: "datetime" };
     }
     let matched = 0, skipped = 0;
     const notFound = [];
     for (const [id, value] of Object.entries(inputValues)) {
-      const el = idMap[id];
-      if (!el) { notFound.push(id); skipped++; continue; }
-      setNativeValue(el, value);
+      const entry = idMap[id];
+      if (!entry) { notFound.push(id); skipped++; continue; }
+      if (entry.kind === "dropdown") setDropdownValue(entry.el, value);
+      else if (entry.kind === "datetime") setDateTimeValue(entry.el, value);
+      else setNativeValue(entry.el, value);
       matched++;
     }
     return { matched, skipped, notFound };
